@@ -69,6 +69,7 @@ class RaidTracker(QtWidgets.QMainWindow):
         self._load_icons()
         self._init_ui()
         self.refresh_view()
+        self.sort_tree_by_quotient()
         self.populate_db_combo()
 
     def _load_icons(self):
@@ -144,24 +145,37 @@ class RaidTracker(QtWidgets.QMainWindow):
         self.filter_input = QtWidgets.QLineEdit()
         self.filter_input.setPlaceholderText("Type to filter names...")
         self.filter_input.setFixedWidth(200)
-        self.filter_input.textChanged.connect(self._apply_filter)
+        self.filter_input.textChanged.connect(lambda _: self._apply_filter(do_sort=True))
         filter_h.addWidget(self.filter_input)
         filter_h.addStretch()
-        layout.addLayout(filter_h)
+ 
+        # Class filter dropdown
+        filter_h.addWidget(QtWidgets.QLabel("Filter by class:"))
+        self.class_filter = QtWidgets.QComboBox()
+        self.class_filter.setFixedWidth(self.filter_input.width())
+        self.class_filter.addItem("--all--")  # Default
+        self.class_filter.addItems(sorted(set(e['Class'] for e in self.entries if e.get('is_main', False))))
+        self.class_filter.currentIndexChanged.connect(lambda _: self._apply_filter())
+        filter_h.addWidget(self.class_filter)
+        
+        layout.addLayout(filter_h)       
 
         # Table (Tree)
+        
         self.tree = QtWidgets.QTreeWidget()
+        self.tree.setSortingEnabled(False)
         self.tree.setColumnCount(len(self.columns))
         self.tree.setHeaderLabels(self.columns)
         self.tree.header().setSectionsClickable(False)
         self.tree.setUniformRowHeights(False)
         self.tree.setIndentation(20)
         layout.addWidget(self.tree)
-        self.tree.setSortingEnabled(True)
-        self.tree.sortByColumn(3, Qt.AscendingOrder) 
         self.tree.setItemDelegate(GridLineAndCenterDelegate(self.tree))
         self.tree.setIconSize(QSize(self.row_height_parent - 2, self.row_height_parent - 2))
-
+        
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(3, Qt.AscendingOrder)
+        
         header = self.tree.header()
         header.setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
         for i, w in enumerate(self.col_widths):
@@ -288,7 +302,11 @@ class RaidTracker(QtWidgets.QMainWindow):
         m.setFixedSize(30, 20)
         p = QtWidgets.QPushButton("+")
         p.setFixedSize(30, 20)
+        #lbl = QtWidgets.QLabel(str(entry.get(key, 0)))
         lbl = QtWidgets.QLabel(str(entry.get(key, 0)))
+        font = lbl.font()
+        font.setBold(True)
+        lbl.setFont(font)
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setMinimumHeight(row_height)
         h.addStretch()
@@ -340,7 +358,6 @@ class RaidTracker(QtWidgets.QMainWindow):
             
             for i, col in enumerate(self.columns[4:-2], 4):
                 if col == "Beryl shard":
-                    w_beryl = self._make_plusonly_widget(m, col, row_height=self.row_height_parent)
                     self.tree.setItemWidget(parent, i, w_beryl)
                 else:
                     w_e = self._make_counter_widget(m, col, row_height=self.row_height_parent)
@@ -422,13 +439,11 @@ class RaidTracker(QtWidgets.QMainWindow):
             self.tree.setItemWidget(item, 2, w_r)
             for i, col in enumerate(self.columns[4:-2], 4):
                 if col == "Beryl shard":
-                    w_beryl = self._make_plusonly_widget(t, col)
                     self.tree.setItemWidget(item, i, w_beryl)
                 else:
                     w_e = self._make_counter_widget(t, col)
                     self.tree.setItemWidget(item, i, w_e)
             beryl_idx = self.columns.index("Beryl shard")
-            w_beryl = self._make_plusonly_widget(t, "Beryl shard")
             self.tree.setItemWidget(item, beryl_idx, w_beryl)
             btn = QtWidgets.QPushButton("X")
             btn.setFixedSize(30, 20)
@@ -450,15 +465,36 @@ class RaidTracker(QtWidgets.QMainWindow):
         else:
             self.expand_all_rows()
             self.tree.headerItem().setText(0, "⯆")
-
-
+        
         self.tree.expandAll()
+        
+        if hasattr(self, 'class_filter'):
+            current_class = self.class_filter.currentText()
+            self.class_filter.blockSignals(True)
+            self.class_filter.clear()
+            self.class_filter.addItem("--all--")
+            main_classes = sorted(set(e['Class'] for e in self.entries if e.get('is_main', False) and e.get('active', True)))
+            self.class_filter.addItems(main_classes)
+            idx = self.class_filter.findText(current_class)
+            self.class_filter.setCurrentIndex(idx if idx >= 0 else 0)
+            self.class_filter.blockSignals(False)
+        self._apply_filter()
         self.populate_db_combo()
 
-    def _apply_filter(self, text):
-        text = text.lower().strip()
+    def _apply_filter(self, text=None):
+        name_text = self.filter_input.text().lower().strip()
+        class_text = self.class_filter.currentText() if hasattr(self, 'class_filter') else "--all--"
         def match(item):
-            return text in item.text(1).lower()
+            # Item can be parent or child
+            name_ok = name_text in item.text(1).lower()
+            class_ok = True
+            if class_text != "--all--":
+                # Match against current entry list (mains only for dropdown)
+                # Since name is unique, look up class by name
+                name = item.text(1)
+                entry = next((e for e in self.entries if e['Name'] == name and e.get('active', True)), None)
+                class_ok = entry and entry.get('Class') == class_text
+            return name_ok and class_ok
         root = self.tree.invisibleRootItem()
         for i in range(root.childCount()):
             parent = root.child(i)
@@ -469,13 +505,16 @@ class RaidTracker(QtWidgets.QMainWindow):
                 child.setHidden(not cvis)
                 visible = visible or cvis
             parent.setHidden(not visible)
-
+        self.tree.sortByColumn(3, Qt.AscendingOrder)
+            
+            
     def _on_counter(self, widget, delta):
         e, k = widget.entry, widget.key
         e[k] = max(0, e.get(k, 0) + delta)
         widget.lbl.setText(str(e[k]))
         self._save_data()
         self.refresh_view()
+        self.tree.sortByColumn(14, Qt.AscendingOrder)
 
     def make_padded_icon(self, icon, size, inner_size):
         # icon: QIcon, size: QSize (outer), inner_size: QSize (icon size)
@@ -516,8 +555,12 @@ class RaidTracker(QtWidgets.QMainWindow):
                 self.is_collapsed = True
             else:
                 self.expand_all_rows()
-                self.tree.headerItem().setText(0, "⯆")
+                self.tree.headerItem().setText(0, "⯆")                
                 self.is_collapsed = False
+
+    def sort_tree_by_quotient(self):
+        self.tree.sortByColumn(3, Qt.AscendingOrder)
+        
 
     def collapse_all_rows(self):
         root = self.tree.invisibleRootItem()
