@@ -1,4 +1,4 @@
-build
+build/
 *.spec
 test*
 *.json
